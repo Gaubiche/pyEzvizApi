@@ -166,7 +166,7 @@ class EzvizCamera:
         ).strftime("%Y%m%d")
         response = self._client.get_device_messages_list(
             serials=self._serial,
-            limit=50,
+            limit=1,
             date=start_date,
             end_time="",
         )
