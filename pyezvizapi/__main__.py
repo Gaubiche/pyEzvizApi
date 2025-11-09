@@ -477,9 +477,12 @@ def _handle_unifiedmsg(args: argparse.Namespace, client: EzvizClient) -> int:
         date=args.date,
         end_time=args.end_time or "",
     )
-    messages = response.get("message") or response.get("messages") or []
-    if not isinstance(messages, list):
-        messages = []
+    raw_messages = response.get("message")
+    if not isinstance(raw_messages, list):
+        raw_messages = response.get("messages")
+    if not isinstance(raw_messages, list):
+        raw_messages = []
+    messages: list[dict[str, Any]] = [msg for msg in raw_messages if isinstance(msg, dict)]
 
     def _extract_url(message: dict[str, Any]) -> str | None:
         url = message.get("pic")
@@ -495,8 +498,6 @@ def _handle_unifiedmsg(args: argparse.Namespace, client: EzvizClient) -> int:
 
     if args.urls_only:
         for item in messages:
-            if not isinstance(item, dict):
-                continue
             media_url = _extract_url(item)
             if not media_url:
                 continue
@@ -509,16 +510,15 @@ def _handle_unifiedmsg(args: argparse.Namespace, client: EzvizClient) -> int:
 
     rows: list[dict[str, Any]] = []
     for item in messages:
-        if not isinstance(item, dict):
-            continue
-        ext = item.get("ext") if isinstance(item.get("ext"), dict) else {}
+        ext = item.get("ext")
+        ext_dict = ext if isinstance(ext, dict) else None
         rows.append(
             {
                 "deviceSerial": item.get("deviceSerial"),
                 "time": item.get("timeStr") or item.get("time"),
                 "subType": item.get("subType"),
-                "alarmType": ext.get("alarmType") if isinstance(ext, dict) else None,
-                "title": item.get("title") or item.get("detail") or ext.get("alarmName"),
+                "alarmType": ext_dict.get("alarmType") if ext_dict else None,
+                "title": item.get("title") or item.get("detail") or (ext_dict or {}).get("alarmName"),
                 "url": _extract_url(item) or "",
                 "msgId": item.get("msgId"),
             }
