@@ -161,49 +161,35 @@ class EzvizCamera:
 
         tzinfo = self._get_tzinfo()
         now_local = datetime.datetime.now(tz=tzinfo)
-        date_candidates = [now_local.strftime("%Y%m%d")]
-        if not self._last_alarm:
-            date_candidates.extend(
-                (now_local - datetime.timedelta(days=delta)).strftime("%Y%m%d")
-                for delta in range(1, UNIFIEDMSG_LOOKBACK_DAYS)
-            )
-
-        for date_str in date_candidates:
-            response = self._client.get_device_messages_list(
-                serials=self._serial,
-                limit=1,
-                date=date_str,
-                end_time="",
-            )
-            messages = response.get("message") or response.get("messages") or []
-            if not isinstance(messages, list):
-                continue
-            last_message = next(
-                (
-                    msg
-                    for msg in messages
-                    if isinstance(msg, dict)
-                    and msg.get("deviceSerial") == self._serial
-                ),
-                None,
-            )
-            if last_message is None:
-                continue
-            self._last_alarm = self._normalize_unified_message(last_message)
+        start_date = (
+            now_local - datetime.timedelta(days=UNIFIEDMSG_LOOKBACK_DAYS - 1)
+        ).strftime("%Y%m%d")
+        response = self._client.get_device_messages_list(
+            serials=self._serial,
+            limit=1,
+            date=start_date,
+            end_time="",
+        )
+        messages = response.get("message") or response.get("messages") or []
+        if not isinstance(messages, list) or not messages:
             _LOGGER.debug(
-                "Fetched last alarm for %s (date=%s): %s",
+                "No unified messages found for %s since %s",
                 self._serial,
-                date_str,
-                self._last_alarm,
+                start_date,
             )
-            self._motion_trigger()
-            break
-        else:
-            _LOGGER.debug(
-                "No unified messages found for %s within %s",
-                self._serial,
-                date_candidates,
-            )
+            return
+        last_message = messages[0]
+        if not isinstance(last_message, dict):
+            _LOGGER.debug("Unexpected unified message payload for %s", self._serial)
+            return
+        self._last_alarm = self._normalize_unified_message(last_message)
+        _LOGGER.debug(
+            "Fetched last alarm for %s (since=%s): %s",
+            self._serial,
+            start_date,
+            self._last_alarm,
+        )
+        self._motion_trigger()
 
     def _local_ip(self) -> str:
         """Fix empty ip value for certain cameras."""

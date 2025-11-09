@@ -135,6 +135,9 @@ from .utils import convert_to_dict, deep_merge
 
 _LOGGER = logging.getLogger(__name__)
 
+UNIFIEDMSG_LOOKBACK_DAYS = 7
+MAX_UNIFIEDMSG_PAGES = 6
+
 
 class ClientToken(TypedDict):
     """Typed shape for the Ezviz client token."""
@@ -2250,32 +2253,67 @@ class EzvizClient:
             return {}
 
         latest: dict[str, dict[str, Any]] = {}
+        start_date = (
+            dt.datetime.now() - dt.timedelta(days=UNIFIEDMSG_LOOKBACK_DAYS - 1)
+        ).strftime("%Y%m%d")
         for start in range(0, len(serial_list), chunk_size):
-            chunk = serial_list[start : start + chunk_size]
+            chunk = [serial for serial in serial_list[start : start + chunk_size] if serial]
             if not chunk:
                 continue
+            chunk_key = ",".join(chunk)
+            missing = {serial for serial in chunk if serial not in latest}
+            if not missing:
+                continue
             limit = min(50, max(len(chunk), 20))
-            try:
-                response = self.get_device_messages_list(
-                    serials=",".join(chunk),
-                    limit=limit,
-                    max_retries=1,
-                )
-            except PyEzvizError as err:
-                _LOGGER.debug(
-                    "alarm_prefetch_failed: serials=%s error=%s",
-                    ",".join(chunk),
-                    err,
-                )
-                continue
+            end_time = ""
+            page = 0
+            while missing and page < MAX_UNIFIEDMSG_PAGES:
+                page += 1
+                try:
+                    response = self.get_device_messages_list(
+                        serials=chunk_key,
+                        limit=limit,
+                        date=start_date,
+                        end_time=end_time,
+                        max_retries=1,
+                    )
+                except PyEzvizError as err:
+                    _LOGGER.debug(
+                        "alarm_prefetch_failed: serials=%s error=%s",
+                        chunk_key,
+                        err,
+                    )
+                    break
 
-            items = response.get("message") or response.get("messages") or []
-            if not isinstance(items, list):
-                continue
-            for item in items:
-                serial = item.get("deviceSerial")
-                if isinstance(serial, str) and serial not in latest:
-                    latest[serial] = item
+                items = response.get("message") or response.get("messages") or []
+                if not isinstance(items, list) or not items:
+                    break
+
+                for item in items:
+                    serial = item.get("deviceSerial")
+                    if (
+                        isinstance(serial, str)
+                        and serial in missing
+                        and serial not in latest
+                    ):
+                        latest[serial] = item
+                        missing.discard(serial)
+
+                if not missing:
+                    break
+
+                last_msg = items[-1].get("msgId")
+                if not isinstance(last_msg, str) or not last_msg:
+                    break
+                if not response.get("hasNext"):
+                    break
+                end_time = last_msg
+            if missing:
+                _LOGGER.debug(
+                    "alarm_prefetch_incomplete: serials=%s missing=%s",
+                    chunk_key,
+                    ",".join(sorted(missing)),
+                )
         return latest
 
     def load_cameras(self, refresh: bool = True) -> dict[Any, Any]:
