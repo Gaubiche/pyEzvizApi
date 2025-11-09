@@ -2244,6 +2244,7 @@ class EzvizClient:
                         )
         return {**self._cameras, **self._light_bulbs}
 
+
     def _prefetch_latest_camera_alarms(
         self, serials: Iterable[str], *, chunk_size: int = 20
     ) -> dict[str, dict[str, Any]]:
@@ -2257,22 +2258,16 @@ class EzvizClient:
             (dt.datetime.now() - dt.timedelta(days=delta)).strftime("%Y%m%d")
             for delta in range(UNIFIEDMSG_LOOKBACK_DAYS)
         ]
-        for start in range(0, len(serial_list), chunk_size):
-            chunk = [serial for serial in serial_list[start : start + chunk_size] if serial]
-            if not chunk:
-                continue
-            chunk_key = ",".join(chunk)
-            missing = {serial for serial in chunk if serial not in latest}
-            if not missing:
-                continue
-            limit = min(50, max(len(chunk), 20))
+
+        def _query_chunk(chunk_key: str, missing: set[str], limit: int) -> None:
+            """Populate latest alarms for a given chunk."""
             for date_str in date_sequence:
                 if not missing:
-                    break
+                    return
                 end_time = ""
-                page = 0
-                while missing and page < MAX_UNIFIEDMSG_PAGES:
-                    page += 1
+                for _ in range(MAX_UNIFIEDMSG_PAGES):
+                    if not missing:
+                        return
                     try:
                         response = self.get_device_messages_list(
                             serials=chunk_key,
@@ -2287,7 +2282,7 @@ class EzvizClient:
                             chunk_key,
                             err,
                         )
-                        break
+                        return
 
                     items = response.get("message") or response.get("messages") or []
                     if not isinstance(items, list) or not items:
@@ -2303,24 +2298,32 @@ class EzvizClient:
                             latest[serial] = item
                             missing.discard(serial)
 
-                    if not missing:
+                    if not missing or not response.get("hasNext"):
                         break
 
                     last_msg = items[-1].get("msgId")
                     if not isinstance(last_msg, str) or not last_msg:
                         break
-                    if not response.get("hasNext"):
-                        break
                     end_time = last_msg
-                if not missing:
-                    break
-            if missing:
+
+        for start_idx in range(0, len(serial_list), chunk_size):
+            chunk = [serial for serial in serial_list[start_idx : start_idx + chunk_size] if serial]
+            if not chunk:
+                continue
+            remaining = {serial for serial in chunk if serial not in latest}
+            if not remaining:
+                continue
+            chunk_key = ",".join(chunk)
+            limit = min(50, max(len(chunk), 20))
+            _query_chunk(chunk_key, remaining, limit)
+            if remaining:
                 _LOGGER.debug(
                     "alarm_prefetch_incomplete: serials=%s missing=%s",
                     chunk_key,
-                    ",".join(sorted(missing)),
+                    ",".join(sorted(remaining)),
                 )
         return latest
+
 
     def load_cameras(self, refresh: bool = True) -> dict[Any, Any]:
         """Load and return all camera status mappings.
