@@ -159,15 +159,10 @@ class EzvizCamera:
             self._motion_trigger()
             return
 
-        tzinfo = self._get_tzinfo()
-        now_local = datetime.datetime.now(tz=tzinfo)
-        start_date = (
-            now_local - datetime.timedelta(days=UNIFIEDMSG_LOOKBACK_DAYS - 1)
-        ).strftime("%Y%m%d")
         response = self._client.get_device_messages_list(
             serials=self._serial,
             limit=1,
-            date=start_date,
+            date="",
             end_time="",
         )
         messages = response.get("message") or response.get("messages") or []
@@ -184,18 +179,12 @@ class EzvizCamera:
         )
         if latest_message is None:
             _LOGGER.debug(
-                "No unified messages found for %s since %s",
+                "No unified messages found for %s today",
                 self._serial,
-                start_date,
             )
             return
         self._last_alarm = self._normalize_unified_message(latest_message)
-        _LOGGER.debug(
-            "Fetched last alarm for %s (since=%s): %s",
-            self._serial,
-            start_date,
-            self._last_alarm,
-        )
+        _LOGGER.debug("Fetched last alarm for %s: %s", self._serial, self._last_alarm)
         self._motion_trigger()
 
     def _local_ip(self) -> str:
