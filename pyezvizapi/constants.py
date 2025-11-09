@@ -22,6 +22,8 @@ FEATURE_CODE = _generate_unique_code()
 XOR_KEY = b"\x0c\x0eJ^X\x15@Rr"
 DEFAULT_TIMEOUT = 25
 MAX_RETRIES = 3
+# Unified message API default subtype that returns all alarm categories.
+DEFAULT_UNIFIEDMSG_STYPE = "92"
 HIK_ENCRYPTION_HEADER = b"hikencodepicture"
 REQUEST_HEADER = {
     "featureCode": FEATURE_CODE,
@@ -44,7 +46,7 @@ APP_SECRET = "17454517-cc1c-42b3-a845-99b4a15dd3e6"
 
 @unique
 class MessageFilterType(Enum):
-    """Message filter types for unified list."""
+    """Fine-grained message filters used by the unified list API."""
 
     FILTER_TYPE_MOTION = 2402
     FILTER_TYPE_PERSON = 2403
@@ -52,6 +54,16 @@ class MessageFilterType(Enum):
     FILTER_TYPE_SOUND = 2405
     FILTER_TYPE_ALL_ALARM = 2401
     FILTER_TYPE_SYSTEM_MESSAGE = 2101
+
+
+@unique
+class UnifiedMessageSubtype(str, Enum):
+    """High-level subtype bundles supported by the Ezviz mobile app."""
+
+    # Equivalent to the "All alarm" chip in the official app UI.
+    ALL_ALARMS = "92"
+    # Same comma-separated bundle returned by msgDefaultSubtype() inside the app.
+    DEFAULT_APP_SUBTYPE = "9904,2701"
 
 
 @unique

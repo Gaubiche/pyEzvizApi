@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from datetime import datetime
+from collections.abc import Callable, Iterable, Mapping
+import datetime as dt
 import hashlib
 import json
 import logging
-from typing import Any, ClassVar, TypedDict, cast
+from typing import Any, ClassVar, NotRequired, TypedDict, cast
 from urllib.parse import urlencode
 from uuid import uuid4
 
@@ -70,6 +70,7 @@ from .api_endpoints import (
     API_ENDPOINT_PANORAMIC_DEVICES_OPERATION,
     API_ENDPOINT_PTZCONTROL,
     API_ENDPOINT_REFRESH_SESSION_ID,
+    API_ENDPOINT_REMOTE_LOCK,
     API_ENDPOINT_REMOTE_UNBIND_PROGRESS,
     API_ENDPOINT_REMOTE_UNLOCK,
     API_ENDPOINT_RETURN_PANORAMIC,
@@ -110,13 +111,13 @@ from .camera import EzvizCamera
 from .cas import EzvizCAS
 from .constants import (
     DEFAULT_TIMEOUT,
+    DEFAULT_UNIFIEDMSG_STYPE,
     FEATURE_CODE,
     MAX_RETRIES,
     REQUEST_HEADER,
     DefenseModeType,
     DeviceCatagories,
     DeviceSwitchType,
-    MessageFilterType,
 )
 from .exceptions import (
     DeviceException,
@@ -135,14 +136,14 @@ from .utils import convert_to_dict, deep_merge
 _LOGGER = logging.getLogger(__name__)
 
 
-class ClientToken(TypedDict, total=False):
+class ClientToken(TypedDict):
     """Typed shape for the Ezviz client token."""
 
-    session_id: str | None
-    rf_session_id: str | None
-    username: str | None
+    session_id: NotRequired[str | None]
+    rf_session_id: NotRequired[str | None]
+    username: NotRequired[str | None]
     api_url: str
-    service_urls: dict[str, Any]
+    service_urls: NotRequired[dict[str, Any]]
 
 
 class MetaDict(TypedDict, total=False):
@@ -752,30 +753,80 @@ class EzvizClient:
     def get_device_messages_list(
         self,
         serials: str | None = None,
-        s_type: int = MessageFilterType.FILTER_TYPE_ALL_ALARM.value,
-        limit: int | None = 20,  # 50 is the max even if you set it higher
-        date: str = datetime.today().strftime("%Y%m%d"),
-        end_time: str | None = None,
-        tags: str = "ALL",
+        s_type: str | int | Iterable[str | int] | None = DEFAULT_UNIFIEDMSG_STYPE,
+        *,
+        limit: int = 20,
+        date: str | dt.date | dt.datetime | None = None,
+        end_time: str | int | None = "",
         max_retries: int = 0,
     ) -> dict:
-        """Get data from Unified message list API."""
+        r"""Return unified alarm/message list for the requested devices.
+
+        Args:
+            serials: Optional CSV string of serial numbers. ``None`` returns all.
+            s_type: Can be a string, int, iterable of either, or
+                :class:`~pyezvizapi.constants.UnifiedMessageSubtype`.
+            limit: Clamp between 1 and 50 as enforced by the public API.
+            date: Accepts ``YYYYMMDD`` string, :class:`datetime.date`, or
+                :class:`datetime.datetime`. Defaults to "today" in API format.
+            end_time: Pass the ``msgId`` (string) returned by the previous call
+                for pagination. The mobile app sends an empty string to fetch the
+                most recent message, so ``""`` is preserved on purpose here.
+            max_retries: Number of additional attempts when the backend reports
+                temporary failures. Capped by :data:`MAX_RETRIES`.
+        """
         if max_retries > MAX_RETRIES:
             raise PyEzvizError("Can't gather proper data. Max retries exceeded.")
 
-        params: dict[str, int | str | None] = {
+        def _stringify(value: Any) -> str:
+            raw = getattr(value, "value", value)
+            return str(raw)
+
+        stype_param: str | None
+        if s_type is None:
+            stype_param = DEFAULT_UNIFIEDMSG_STYPE
+        elif isinstance(s_type, str):
+            stype_param = s_type
+        elif isinstance(s_type, Iterable) and not isinstance(s_type, (bytes, bytearray)):
+            parts = [_stringify(item) for item in s_type if item not in (None, "")]
+            stype_param = ",".join(parts) if parts else DEFAULT_UNIFIEDMSG_STYPE
+        else:
+            stype_param = _stringify(s_type)
+
+        if date is None:
+            date_value = dt.datetime.now().strftime("%Y%m%d")
+        elif isinstance(date, (dt.date, dt.datetime)):
+            date_value = date.strftime("%Y%m%d")
+        else:
+            date_value = str(date)
+
+        try:
+            limit_value = max(1, min(int(limit), 50))
+        except (TypeError, ValueError):
+            limit_value = 20
+
+        end_time_value: str
+        if end_time is None:
+            end_time_value = ""
+        else:
+            end_time_value = str(end_time)
+
+        params: dict[str, Any] = {
             "serials": serials,
-            "stype": s_type,
-            "limit": limit,
-            "date": date,
-            "endTime": end_time,
-            "tags": tags,
+            "stype": stype_param,
+            "limit": limit_value,
+            "date": date_value,
+            "endTime": end_time_value,
         }
+        filtered_params = {k: v for k, v in params.items() if v not in (None, "")}
+        # keep empty string endTime to mimic app behavior
+        if end_time_value == "":
+            filtered_params["endTime"] = ""
 
         json_output = self._request_json(
             "GET",
             API_ENDPOINT_UNIFIEDMSG_LIST_GET,
-            params=params,
+            params=filtered_params,
             retry_401=True,
             max_retries=max_retries,
         )
@@ -2126,6 +2177,26 @@ class EzvizClient:
         records = cast(dict[str, EzvizDeviceRecord], self.get_device_records(None))
         supported_categories = self.SUPPORTED_CATEGORIES
 
+        def _is_supported_camera(rec: EzvizDeviceRecord) -> bool:
+            """Return True if record should be treated as a camera."""
+            if rec.device_category not in supported_categories:
+                return False
+            if rec.device_category == DeviceCatagories.LIGHTING.value:
+                return False
+            if (
+                rec.device_category == DeviceCatagories.COMMON_DEVICE_CATEGORY.value
+                and not ((rec.raw.get("deviceInfos") or {}).get("hik"))
+            ):
+                return False
+            return True
+
+        latest_alarms: dict[str, dict[str, Any]] = {}
+        if refresh:
+            camera_serials = [
+                serial for serial, record in records.items() if _is_supported_camera(record)
+            ]
+            latest_alarms = self._prefetch_latest_camera_alarms(camera_serials)
+
         for device, rec in records.items():
             if rec.device_category in supported_categories:
                 # Add support for connected HikVision cameras
@@ -2157,7 +2228,10 @@ class EzvizClient:
                     try:
                         # Create camera object
                         cam = EzvizCamera(self, device, dict(rec.raw))
-                        self._cameras[device] = cam.status(refresh=refresh)
+                        self._cameras[device] = cam.status(
+                            refresh=refresh,
+                            latest_alarm=latest_alarms.get(device),
+                        )
 
                     except (
                         PyEzvizError,
@@ -2172,6 +2246,43 @@ class EzvizClient:
                             str(err),
                         )
         return {**self._cameras, **self._light_bulbs}
+
+    def _prefetch_latest_camera_alarms(
+        self, serials: Iterable[str], *, chunk_size: int = 20
+    ) -> dict[str, dict[str, Any]]:
+        """Attempt to fetch the most recent unified message per camera serial."""
+        serial_list = [serial for serial in serials if serial]
+        if not serial_list:
+            return {}
+
+        latest: dict[str, dict[str, Any]] = {}
+        for start in range(0, len(serial_list), chunk_size):
+            chunk = serial_list[start : start + chunk_size]
+            if not chunk:
+                continue
+            limit = min(50, max(len(chunk), 20))
+            try:
+                response = self.get_device_messages_list(
+                    serials=",".join(chunk),
+                    limit=limit,
+                    max_retries=1,
+                )
+            except PyEzvizError as err:
+                _LOGGER.debug(
+                    "alarm_prefetch_failed: serials=%s error=%s",
+                    ",".join(chunk),
+                    err,
+                )
+                continue
+
+            items = response.get("message") or response.get("messages") or []
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                serial = item.get("deviceSerial")
+                if isinstance(serial, str) and serial not in latest:
+                    latest[serial] = item
+        return latest
 
     def load_cameras(self, refresh: bool = True) -> dict[Any, Any]:
         """Load and return all camera status mappings.
@@ -2631,13 +2742,30 @@ class EzvizClient:
         self._ensure_ok(json_output, "Could not get door lock users")
         return json_output
 
-    def remote_unlock(self, serial: str, user_id: str, lock_no: int) -> bool:
+    def remote_unlock(
+        self,
+        serial: str,
+        user_id: str,
+        lock_no: int,
+        *,
+        resource_id: str | None = None,
+        local_index: str | int | None = None,
+        stream_token: str | None = None,
+        lock_type: str | None = None,
+    ) -> bool:
         """Sends a remote command to unlock a specific lock.
 
         Args:
             serial (str): The camera serial.
             user_id (str): The user id.
             lock_no (int): The lock number.
+            resource_id (str, optional): Resource identifier reported by the device
+                (for example ``Video`` or ``DoorLock``). Defaults to ``"Video"``.
+            local_index (str | int, optional): Local channel index for the lock.
+                Defaults to ``"1"``.
+            stream_token (str, optional): Stream token associated with the lock if
+                provided by the API. Defaults to empty string when omitted.
+            lock_type (str, optional): Optional lock type hint used by some devices.
 
         Raises:
             PyEzvizError: If max retries are exceeded or if the response indicates failure.
@@ -2647,17 +2775,20 @@ class EzvizClient:
             bool: True if the operation was successful.
 
         """
-        payload = {
-            "unLockInfo": {
-                "bindCode": f"{FEATURE_CODE}{user_id}",
-                "lockNo": lock_no,
-                "streamToken": "",
-                "userName": user_id,
-            }
+        route_resource = resource_id or "Video"
+        route_index = str(local_index if local_index is not None else 1)
+        un_lock_info: dict[str, Any] = {
+            "bindCode": f"{FEATURE_CODE}{user_id}",
+            "lockNo": lock_no,
+            "streamToken": stream_token or "",
+            "userName": user_id,
         }
+        if lock_type:
+            un_lock_info["type"] = lock_type
+        payload = {"unLockInfo": un_lock_info}
         json_result = self._request_json(
             "PUT",
-            f"{API_ENDPOINT_IOT_ACTION}{serial}{API_ENDPOINT_REMOTE_UNLOCK}",
+            f"{API_ENDPOINT_IOT_ACTION}{serial}/{route_resource}/{route_index}{API_ENDPOINT_REMOTE_UNLOCK}",
             json_body=payload,
             retry_401=True,
             max_retries=0,
@@ -2667,6 +2798,45 @@ class EzvizClient:
             serial,
             self._response_code(json_result),
             "remote_unlock",
+        )
+        return True
+
+    def remote_lock(
+        self,
+        serial: str,
+        user_id: str,
+        lock_no: int,
+        *,
+        resource_id: str | None = None,
+        local_index: str | int | None = None,
+        stream_token: str | None = None,
+        lock_type: str | None = None,
+    ) -> bool:
+        """Send a remote lock command to a specific lock."""
+
+        route_resource = resource_id or "Video"
+        route_index = str(local_index if local_index is not None else 1)
+        un_lock_info: dict[str, Any] = {
+            "bindCode": f"{FEATURE_CODE}{user_id}",
+            "lockNo": lock_no,
+            "streamToken": stream_token or "",
+            "userName": user_id,
+        }
+        if lock_type:
+            un_lock_info["type"] = lock_type
+        payload = {"unLockInfo": un_lock_info}
+        json_result = self._request_json(
+            "PUT",
+            f"{API_ENDPOINT_IOT_ACTION}{serial}/{route_resource}/{route_index}{API_ENDPOINT_REMOTE_LOCK}",
+            json_body=payload,
+            retry_401=True,
+            max_retries=0,
+        )
+        _LOGGER.debug(
+            "http_debug: serial=%s code=%s msg=%s",
+            serial,
+            self._response_code(json_result),
+            "remote_lock",
         )
         return True
 
