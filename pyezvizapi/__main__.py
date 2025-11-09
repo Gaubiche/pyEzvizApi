@@ -260,6 +260,37 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--serial", required=False, help="Optional serial to filter a single device"
     )
 
+    parser_unified = subparsers.add_parser(
+        "unifiedmsg",
+        help="Fetch unified message list (alarm feed) and dump URLs/metadata",
+    )
+    parser_unified.add_argument(
+        "--serials",
+        required=False,
+        help="Comma-separated serials to filter (default: all devices)",
+    )
+    parser_unified.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Number of messages to request (max 50; default: 20)",
+    )
+    parser_unified.add_argument(
+        "--date",
+        required=False,
+        help="Date in YYYYMMDD format (default: today in API timezone)",
+    )
+    parser_unified.add_argument(
+        "--end-time",
+        required=False,
+        help="Pagination token (msgId) returned by previous call (default: latest)",
+    )
+    parser_unified.add_argument(
+        "--urls-only",
+        action="store_true",
+        help="Print only deviceSerial + media URLs instead of full metadata",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -437,6 +468,70 @@ def _handle_device_infos(args: argparse.Namespace, client: EzvizClient) -> int:
     return 0
 
 
+def _handle_unifiedmsg(args: argparse.Namespace, client: EzvizClient) -> int:
+    """Fetch unified message list and optionally dump media URLs."""
+
+    response = client.get_device_messages_list(
+        serials=args.serials,
+        limit=args.limit,
+        date=args.date,
+        end_time=args.end_time or "",
+    )
+    messages = response.get("message") or response.get("messages") or []
+    if not isinstance(messages, list):
+        messages = []
+
+    def _extract_url(message: dict[str, Any]) -> str | None:
+        url = message.get("pic")
+        if not url:
+            url = message.get("defaultPic") or message.get("image")
+        if not url:
+            ext = message.get("ext")
+            if isinstance(ext, dict):
+                pics = ext.get("pics")
+                if isinstance(pics, str) and pics:
+                    url = pics.split(";")[0]
+        return url
+
+    if args.urls_only:
+        for item in messages:
+            if not isinstance(item, dict):
+                continue
+            media_url = _extract_url(item)
+            if not media_url:
+                continue
+            sys.stdout.write(f"{item.get('deviceSerial', 'unknown')}: {media_url}\n")
+        return 0
+
+    if args.json:
+        _write_json(messages)
+        return 0
+
+    rows: list[dict[str, Any]] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        ext = item.get("ext") if isinstance(item.get("ext"), dict) else {}
+        rows.append(
+            {
+                "deviceSerial": item.get("deviceSerial"),
+                "time": item.get("timeStr") or item.get("time"),
+                "subType": item.get("subType"),
+                "alarmType": ext.get("alarmType") if isinstance(ext, dict) else None,
+                "title": item.get("title") or item.get("detail") or ext.get("alarmName"),
+                "url": _extract_url(item) or "",
+                "msgId": item.get("msgId"),
+            }
+        )
+
+    if rows:
+        df = pd.DataFrame(rows)
+        _write_df(df)
+    else:
+        sys.stdout.write("No unified messages returned.\n")
+    return 0
+
+
 def _handle_light(args: argparse.Namespace, client: EzvizClient) -> int:
     """Handle `light` subcommands (toggle/status)."""
     light_bulb = EzvizLightBulb(client, args.serial)
@@ -599,6 +694,8 @@ def main(argv: list[str] | None = None) -> int:
             return _handle_pagelist(client)
         if args.action == "device_infos":
             return _handle_device_infos(args, client)
+        if args.action == "unifiedmsg":
+            return _handle_unifiedmsg(args, client)
 
     except PyEzvizError as exp:
         _LOGGER.error("%s", exp)

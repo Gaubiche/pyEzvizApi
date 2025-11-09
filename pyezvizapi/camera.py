@@ -294,9 +294,9 @@ class EzvizCamera:
         )
 
         alarm_name = (
-            ext.get("alarmName")
-            or message.get("title")
+            message.get("title")
             or message.get("detail")
+            or message.get("sampleName")
             or "NoAlarm"
         )
         alarm_type = ext.get("alarmType") or message.get("subType") or "0000"
