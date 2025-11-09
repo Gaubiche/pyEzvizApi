@@ -161,22 +161,16 @@ class EzvizCamera:
 
         tzinfo = self._get_tzinfo()
         now_local = datetime.datetime.now(tz=tzinfo)
-        start_date = (
-            now_local - datetime.timedelta(days=UNIFIEDMSG_LOOKBACK_DAYS - 1)
-        ).strftime("%Y%m%d")
+        date_str = now_local.strftime("%Y%m%d")
         response = self._client.get_device_messages_list(
             serials=self._serial,
             limit=1,
-            date=start_date,
+            date=date_str,
             end_time="",
         )
         messages = response.get("message") or response.get("messages") or []
         if not isinstance(messages, list) or not messages:
-            _LOGGER.debug(
-                "No unified messages found for %s since %s",
-                self._serial,
-                start_date,
-            )
+            _LOGGER.debug("No unified messages found for %s on %s", self._serial, date_str)
             return
         last_message = messages[0]
         if not isinstance(last_message, dict):
@@ -184,9 +178,9 @@ class EzvizCamera:
             return
         self._last_alarm = self._normalize_unified_message(last_message)
         _LOGGER.debug(
-            "Fetched last alarm for %s (since=%s): %s",
+            "Fetched last alarm for %s (date=%s): %s",
             self._serial,
-            start_date,
+            date_str,
             self._last_alarm,
         )
         self._motion_trigger()
