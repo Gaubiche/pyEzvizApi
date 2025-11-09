@@ -805,11 +805,7 @@ class EzvizClient:
         except (TypeError, ValueError):
             limit_value = 20
 
-        end_time_value: str
-        if end_time is None:
-            end_time_value = ""
-        else:
-            end_time_value = str(end_time)
+        end_time_value: str = "" if end_time is None else str(end_time)
 
         params: dict[str, Any] = {
             "serials": serials,
@@ -2183,12 +2179,10 @@ class EzvizClient:
                 return False
             if rec.device_category == DeviceCatagories.LIGHTING.value:
                 return False
-            if (
+            return not (
                 rec.device_category == DeviceCatagories.COMMON_DEVICE_CATEGORY.value
                 and not ((rec.raw.get("deviceInfos") or {}).get("hik"))
-            ):
-                return False
-            return True
+            )
 
         latest_alarms: dict[str, dict[str, Any]] = {}
         if refresh:
