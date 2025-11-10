@@ -2274,7 +2274,7 @@ class EzvizClient:
                     )
                 except PyEzvizError as err:
                     _LOGGER.debug(
-                        "alarm_prefetch_failed: serials=%s error=%s",
+                        "alarm_prefetch_failed: serials=%s error=%r",
                         chunk_key,
                         err,
                     )
