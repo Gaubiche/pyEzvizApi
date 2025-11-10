@@ -2260,47 +2260,37 @@ class EzvizClient:
 
         def _query_chunk(chunk_key: str, missing: set[str], limit: int) -> None:
             """Populate latest alarms for a given chunk."""
-            end_time = ""
-            for _ in range(MAX_UNIFIEDMSG_PAGES):
-                if not missing:
-                    return
-                try:
-                    response = self.get_device_messages_list(
-                        serials=chunk_key,
-                        limit=limit,
-                        date="",
-                        end_time=end_time,
-                        max_retries=1,
-                    )
-                except PyEzvizError as err:
-                    _LOGGER.debug(
-                        "alarm_prefetch_failed: serials=%s error=%r",
-                        chunk_key,
-                        err,
-                    )
-                    return
+            if not missing:
+                return
+            try:
+                response = self.get_device_messages_list(
+                    serials=chunk_key or None,
+                    limit=limit,
+                    date="",
+                    end_time="",
+                    max_retries=1,
+                )
+            except PyEzvizError as err:
+                _LOGGER.debug(
+                    "alarm_prefetch_failed: serials=%s error=%r",
+                    chunk_key,
+                    err,
+                )
+                return
 
-                items = response.get("message") or response.get("messages") or []
-                if not isinstance(items, list) or not items:
-                    break
+            items = response.get("message") or response.get("messages") or []
+            if not isinstance(items, list) or not items:
+                return
 
-                for item in items:
-                    serial = item.get("deviceSerial")
-                    if (
-                        isinstance(serial, str)
-                        and serial in missing
-                        and serial not in latest
-                    ):
-                        latest[serial] = item
-                        missing.discard(serial)
-
-                if not missing or not response.get("hasNext"):
-                    break
-
-                last_msg = items[-1].get("msgId")
-                if not isinstance(last_msg, str) or not last_msg:
-                    break
-                end_time = last_msg
+            for item in items:
+                serial = item.get("deviceSerial")
+                if (
+                    isinstance(serial, str)
+                    and serial in missing
+                    and serial not in latest
+                ):
+                    latest[serial] = item
+                    missing.discard(serial)
 
         remaining_serials = set(serial_list)
 
