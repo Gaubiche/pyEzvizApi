@@ -253,6 +253,7 @@ class EzvizClient:
         self._cameras: dict[str, Any] = {}
         self._light_bulbs: dict[str, Any] = {}
         self.mqtt_client: MQTTClient | None = None
+        self._debug_request_counters: dict[str, int] = {}
 
     def _login(self, smscode: int | None = None) -> dict[Any, Any]:
         """Login to Ezviz API."""
@@ -832,6 +833,17 @@ class EzvizClient:
             max_retries=max_retries,
         )
         self._ensure_ok(json_output, "Could not get unified message list")
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            counter_key = "unifiedmsg"
+            self._debug_request_counters[counter_key] = (
+                self._debug_request_counters.get(counter_key, 0) + 1
+            )
+            _LOGGER.debug(
+                "req_counter[%s]=%s params=%s",
+                counter_key,
+                self._debug_request_counters[counter_key],
+                filtered_params,
+            )
         return json_output
 
     def add_device(
