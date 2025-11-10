@@ -2298,6 +2298,7 @@ class EzvizClient:
                 if not isinstance(items, list) or not items:
                     return
 
+                matched = 0
                 for item in items:
                     serial = item.get("deviceSerial")
                     if (
@@ -2307,6 +2308,12 @@ class EzvizClient:
                     ):
                         latest[serial] = item
                         missing.discard(serial)
+                        matched += 1
+
+                # If this filtered call returned fewer entries than we still need,
+                # assume remaining serials truly have no data and stop retrying.
+                if filtered and matched < len(missing):
+                    return
 
                 if not response.get("hasNext"):
                     return
