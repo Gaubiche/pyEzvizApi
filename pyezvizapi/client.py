@@ -2270,44 +2270,55 @@ class EzvizClient:
 
         latest: dict[str, dict[str, Any]] = {}
 
-        def _query_chunk(chunk_key: str, missing: set[str], limit: int) -> None:
-            """Populate latest alarms for a given chunk."""
-            if not missing:
-                return
-            try:
-                response = self.get_device_messages_list(
-                    serials=chunk_key or None,
-                    limit=limit,
-                    date="",
-                    end_time="",
-                    max_retries=1,
-                )
-            except PyEzvizError as err:
-                _LOGGER.debug(
-                    "alarm_prefetch_failed: serials=%s error=%r",
-                    chunk_key,
-                    err,
-                )
-                return
+        def _query_chunk(
+            missing: set[str], limit: int, *, filtered: bool
+        ) -> None:
+            """Populate latest alarms for a given chunk, retrying a few times."""
+            attempts = 0
+            while missing and attempts < MAX_UNIFIEDMSG_PAGES:
+                attempts += 1
+                serial_param = None if not filtered else ",".join(sorted(missing))
+                try:
+                    response = self.get_device_messages_list(
+                        serials=serial_param,
+                        limit=limit,
+                        date="",
+                        end_time="",
+                        max_retries=1,
+                    )
+                except PyEzvizError as err:
+                    _LOGGER.debug(
+                        "alarm_prefetch_failed: serials=%s error=%r",
+                        serial_param or "",
+                        err,
+                    )
+                    return
 
-            items = response.get("message") or response.get("messages") or []
-            if not isinstance(items, list) or not items:
-                return
+                items = response.get("message") or response.get("messages") or []
+                if not isinstance(items, list) or not items:
+                    return
 
-            for item in items:
-                serial = item.get("deviceSerial")
-                if (
-                    isinstance(serial, str)
-                    and serial in missing
-                    and serial not in latest
-                ):
-                    latest[serial] = item
-                    missing.discard(serial)
+                for item in items:
+                    serial = item.get("deviceSerial")
+                    if (
+                        isinstance(serial, str)
+                        and serial in missing
+                        and serial not in latest
+                    ):
+                        latest[serial] = item
+                        missing.discard(serial)
+
+                if not response.get("hasNext"):
+                    return
 
         remaining_serials = set(serial_list)
 
         # First, try a global fetch without serial filtering to capture the freshest alarms
-        _query_chunk("", remaining_serials, limit=50)
+        before = set(remaining_serials)
+        _query_chunk(remaining_serials, limit=50, filtered=False)
+        satisfied = before - remaining_serials
+        if satisfied:
+            remaining_serials.difference_update(satisfied)
 
         for start_idx in range(0, len(serial_list), chunk_size):
             chunk = [
@@ -2322,8 +2333,11 @@ class EzvizClient:
                 continue
             chunk_key = ",".join(chunk)
             limit = min(50, max(len(chunk), 20))
-            _query_chunk(chunk_key, remaining, limit)
-            remaining_serials -= remaining
+            before_chunk = set(remaining)
+            _query_chunk(remaining, limit, filtered=True)
+            satisfied_chunk = before_chunk - remaining
+            if satisfied_chunk:
+                remaining_serials.difference_update(satisfied_chunk)
             if remaining:
                 _LOGGER.debug(
                     "alarm_prefetch_incomplete: serials=%s missing=%s",
